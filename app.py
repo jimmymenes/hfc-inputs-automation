@@ -262,109 +262,128 @@ with tab1:
         st.info("Upload both files above to enable the run button.")
 
 
-# ── TAB 2: GOOGLE DRIVE + BOX ────────────────────────────────
+# ── TAB 2: GOOGLE DRIVE LINK + BOX PATH ──────────────────────
 with tab2:
-    st.subheader("Connect to Google Drive & Box")
+    st.subheader("Google Drive link & Box folder path")
     st.markdown(
-        "Paste the file IDs from Google Drive and Box. "
-        "The tool will download, populate, and upload the result back to Box automatically."
+        "Paste the Google Drive share link for your survey and the Box folder path "
+        "where your HFC template lives. No credentials needed."
     )
 
-    with st.expander("ℹ️ How to find file IDs"):
-        st.markdown("""
-**Google Drive file ID** — open the file in Drive and copy from the URL:
-```
-https://drive.google.com/file/d/**<FILE_ID>**/view
-```
+    # ── Helper: extract file ID from Google Drive URL ──────────
+    def extract_gdrive_id(url: str):
+        import re
+        patterns = [
+            r"/d/([a-zA-Z0-9_-]{20,})",
+            r"id=([a-zA-Z0-9_-]{20,})",
+        ]
+        for p in patterns:
+            m = re.search(p, url)
+            if m:
+                return m.group(1)
+        return None
 
-**Box file ID** — open the file in Box and copy the number from the URL:
-```
-https://app.box.com/file/**<FILE_ID>**
-```
-
-**Box folder ID** — open the destination folder and copy from the URL:
-```
-https://app.box.com/folder/**<FOLDER_ID>**
-```
-        """)
-
-    gdrive_id      = st.text_input("Google Drive file ID (XLSForm survey)")
-    box_template_id = st.text_input("Box file ID (HFC inputs template)")
-    box_folder_id  = st.text_input("Box folder ID (where to save the output)")
-    output_name    = st.text_input("Output filename", value="hfc_inputs_populated.xlsm")
-
-    st.markdown("---")
-    st.markdown("**Credentials** — ask your IT admin or project lead to fill these in once.")
-
-    with st.expander("Google Drive credentials"):
-        gdrive_creds = st.text_area(
-            "Paste your Google service account JSON key here",
-            height=120,
-            placeholder='{"type": "service_account", "project_id": "...", ...}',
+    def download_gdrive_file(file_id: str) -> bytes:
+        import requests
+        # Try spreadsheet export first, then generic Drive download
+        for url in [
+            f"https://docs.google.com/spreadsheets/d/{file_id}/export?format=xlsx",
+            f"https://drive.google.com/uc?export=download&id={file_id}",
+        ]:
+            r = requests.get(url, timeout=30)
+            if r.status_code == 200 and len(r.content) > 1000:
+                return r.content
+        raise ValueError(
+            "Could not download the file. Make sure the Google Drive link is set to "
+            "'Anyone with the link can view'."
         )
 
-    with st.expander("Box credentials"):
-        box_client_id     = st.text_input("Box Client ID",     type="password")
-        box_client_secret = st.text_input("Box Client Secret", type="password")
-        box_access_token  = st.text_input("Box Access Token",  type="password",
-                                           help="Generate from the Box developer console or run box_first_time_auth() from the Python script.")
+    # ── Helper: scan Box folder for .xlsm files ────────────────
+    def scan_box_folder(folder_path: str):
+        from pathlib import Path
+        p = Path(folder_path)
+        if not p.exists():
+            return None, []
+        files = sorted(p.glob("*.xlsm"))
+        return p, [f for f in files]
 
-    all_filled = all([gdrive_id, box_template_id, box_folder_id, gdrive_creds, box_client_id, box_client_secret, box_access_token])
+    # ── Google Drive link input ────────────────────────────────
+    st.markdown("**1. Survey form — Google Drive share link**")
+    gdrive_url = st.text_input(
+        "Paste the Google Drive share link",
+        placeholder="https://docs.google.com/spreadsheets/d/.../edit?usp=sharing",
+        label_visibility="collapsed",
+    )
 
-    if st.button("Run Auto-Populate", key="btn_cloud", use_container_width=True, type="primary", disabled=not all_filled):
-        with st.spinner("Downloading files and populating HFC inputs..."):
+    gdrive_file_id = None
+    if gdrive_url:
+        gdrive_file_id = extract_gdrive_id(gdrive_url)
+        if gdrive_file_id:
+            st.success(f"File ID detected: `{gdrive_file_id}`")
+        else:
+            st.error("Could not read a file ID from that URL. Make sure you copied the full share link.")
+
+    # ── Box folder path input ──────────────────────────────────
+    st.markdown("**2. HFC inputs template — Box folder path**")
+    box_folder_path = st.text_input(
+        "Paste the Box folder path",
+        placeholder=r"C:\Users\yourname\Box\IPA_Project\...\1_inputs",
+        label_visibility="collapsed",
+    )
+
+    box_folder = None
+    template_files = []
+    selected_template = None
+
+    if box_folder_path:
+        box_folder, template_files = scan_box_folder(box_folder_path)
+        if box_folder is None:
+            st.error("Folder not found. Make sure Box Drive is synced and the path is correct.")
+        elif not template_files:
+            st.warning("No .xlsm files found in that folder.")
+        else:
+            selected_template = st.selectbox(
+                "Select HFC inputs template",
+                options=template_files,
+                format_func=lambda f: f.name,
+            )
+
+    # ── Output filename ────────────────────────────────────────
+    if selected_template:
+        default_out = selected_template.name.replace(".xlsm", "_populated.xlsm")
+    else:
+        default_out = "hfc_inputs_populated.xlsm"
+
+    output_name = st.text_input("Output filename (saved to the same Box folder)", value=default_out)
+
+    # ── Run button ─────────────────────────────────────────────
+    st.markdown("")
+    ready = gdrive_file_id and selected_template
+
+    if st.button("Run Auto-Populate", key="btn_cloud", use_container_width=True, type="primary", disabled=not ready):
+        with st.spinner("Downloading survey, populating and saving to Box..."):
             try:
-                import json
-                from googleapiclient.discovery import build
-                from google.oauth2 import service_account
-                from googleapiclient.http import MediaIoBaseDownload
-                from boxsdk import OAuth2, Client
+                # Download survey from Google Drive (no auth)
+                survey_bytes = download_gdrive_file(gdrive_file_id)
 
-                # Google Drive download
-                creds_info = json.loads(gdrive_creds)
-                creds = service_account.Credentials.from_service_account_info(
-                    creds_info, scopes=["https://www.googleapis.com/auth/drive.readonly"]
-                )
-                service = build("drive", "v3", credentials=creds)
-                request = service.files().get_media(fileId=gdrive_id)
-                survey_buf = io.BytesIO()
-                downloader = MediaIoBaseDownload(survey_buf, request)
-                done = False
-                while not done:
-                    _, done = downloader.next_chunk()
-                survey_bytes = survey_buf.getvalue()
-
-                # Box download
-                oauth = OAuth2(
-                    client_id=box_client_id,
-                    client_secret=box_client_secret,
-                    access_token=box_access_token,
-                )
-                client = Client(oauth)
-                template_buf = io.BytesIO()
-                client.file(box_template_id).download_to(template_buf)
-                template_bytes = template_buf.getvalue()
+                # Read template from local Box folder
+                template_bytes = selected_template.read_bytes()
 
                 # Populate
                 output_bytes, results, n_num, n_sel, n_txt = run_population(survey_bytes, template_bytes)
 
-                # Upload to Box
-                folder = client.folder(box_folder_id)
-                existing_items = {item.name: item for item in folder.get_items()}
-                upload_buf = io.BytesIO(output_bytes)
-                if output_name in existing_items:
-                    existing_items[output_name].update_contents_with_stream(upload_buf)
-                else:
-                    folder.upload_stream(upload_buf, output_name)
+                # Save populated file back to the same Box folder
+                out_path = box_folder / output_name
+                out_path.write_bytes(output_bytes)
 
                 show_results(output_bytes, results, n_num, n_sel, n_txt, output_name)
-                st.info(f"File also saved to Box as **{output_name}**")
+                st.info(f"Saved to Box folder: `{out_path}`")
 
             except Exception as e:
                 st.error(f"Something went wrong: {e}")
 
-    if not all_filled:
-        st.info("Fill in all fields above to enable the run button.")
+    if not ready:
+        st.info("Complete both fields above to enable the run button.")
 
 
 # ─────────────────────────────────────────────────────────────
