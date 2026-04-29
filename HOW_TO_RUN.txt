@@ -1,0 +1,46 @@
+HFC INPUTS AUTO-POPULATOR — HOW TO RUN
+========================================
+
+GETTING THE APP (for colleagues)
+---------------------------------
+1. Install Git if you don't have it: https://git-scm.com/download/win
+2. Install Python if you don't have it: https://www.python.org/downloads/
+   (check "Add Python to PATH" during install)
+
+3. Open Command Prompt and run:
+
+   git clone https://github.com/YOUR_USERNAME/hfc-inputs-automation.git
+   cd hfc-inputs-automation
+
+4. Install dependencies:
+
+   python -m pip install -r requirements.txt
+
+5. Start the app:
+
+   python -m streamlit run app.py
+
+6. Your browser opens automatically at http://localhost:8501 — you're ready!
+
+
+GETTING UPDATES (when the app is improved)
+-------------------------------------------
+Open Command Prompt in the app folder and run:
+
+   git pull
+
+
+TWO WAYS TO USE THE APP
+-----------------------
+Tab 1 - "Upload Files":
+   Upload the XLSForm (.xlsx) and HFC template (.xlsm) directly from
+   your computer. No credentials needed. Best for everyday use.
+
+Tab 2 - "Google Drive & Box":
+   Paste file IDs and credentials to pull files automatically from
+   Google Drive and Box and save the result back to Box.
+
+
+QUESTIONS?
+----------
+Contact Jimmy Jairo: jjairo@poverty-action.org

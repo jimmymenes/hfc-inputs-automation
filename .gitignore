@@ -1,0 +1,25 @@
+# Credentials and tokens — never commit these
+google_credentials.json
+google_token.json
+box_token.txt
+*.pem
+*.key
+secrets.toml
+.streamlit/secrets.toml
+
+# Survey data and output files — keep off GitHub
+*.xlsx
+*.xlsm
+*.xls
+*.csv
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
