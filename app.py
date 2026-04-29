@@ -352,74 +352,71 @@ with tab2:
         else:
             st.error("Could not read a file ID from that URL. Make sure you copied the full share link.")
 
-    # ── Box folder path input ──────────────────────────────────
-    st.markdown("**2. HFC inputs template — Box folder path**")
+    # ── Show bundled template status ───────────────────────────
+    BUNDLED_TEMPLATE = os.path.join(os.path.dirname(__file__), "hfc_inputs.xlsm")
+    has_bundled = os.path.exists(BUNDLED_TEMPLATE)
+
+    if has_bundled:
+        st.success("HFC inputs template: `hfc_inputs.xlsm` (pre-loaded)")
+    else:
+        st.warning("No bundled template found. Ask your admin to add hfc_inputs.xlsm to the app folder.")
+
+    # ── Box output folder path ─────────────────────────────────
+    st.markdown("**2. Where to save the output — Box folder path**")
     box_folder_path = st.text_input(
-        "Paste the Box folder path",
+        "Paste the Box folder path where the populated file should be saved",
         placeholder=r"C:\Users\yourname\Box\IPA_Project\...\1_inputs",
         label_visibility="collapsed",
     )
 
     box_folder = None
-    template_files = []
-    selected_template = None
-
     if box_folder_path:
-        box_folder, template_files, clean_path = scan_box_folder(box_folder_path)
+        box_folder, _, clean_path = scan_box_folder(box_folder_path)
         st.caption(f"Looking in: `{clean_path}`")
         if box_folder is None:
             st.error(
-                "Folder not found. Double-check that:\n"
-                "- Box Drive is open and synced on your computer\n"
-                "- The path above matches exactly (watch for double spaces)\n\n"
+                "Folder not found. Make sure Box Drive is synced and the path is correct.\n\n"
                 "**Tip:** Open the folder in Windows Explorer, click the address bar, "
                 "copy the path from there and paste it here."
             )
-        elif not template_files:
-            st.warning("No .xlsm files found in that folder. Check the folder contains the HFC inputs template.")
         else:
-            selected_template = st.selectbox(
-                "Select HFC inputs template",
-                options=template_files,
-                format_func=lambda f: f.name,
-            )
+            st.success(f"Output folder found: `{box_folder}`")
 
     # ── Output filename ────────────────────────────────────────
-    if selected_template:
-        default_out = selected_template.name.replace(".xlsm", "_populated.xlsm")
-    else:
-        default_out = "hfc_inputs_populated.xlsm"
-
-    output_name = st.text_input("Output filename (saved to the same Box folder)", value=default_out)
+    output_name = st.text_input(
+        "Output filename", value="hfc_inputs_populated.xlsm"
+    )
 
     # ── Run button ─────────────────────────────────────────────
     st.markdown("")
-    ready = gdrive_file_id and selected_template
+    ready = gdrive_file_id and box_folder and has_bundled
 
     if st.button("Run Auto-Populate", key="btn_cloud", use_container_width=True, type="primary", disabled=not ready):
         with st.spinner("Downloading survey, populating and saving to Box..."):
             try:
-                # Download survey from Google Drive (no auth)
                 survey_bytes = download_gdrive_file(gdrive_file_id)
 
-                # Read template from local Box folder
-                template_bytes = selected_template.read_bytes()
+                with open(BUNDLED_TEMPLATE, "rb") as f:
+                    template_bytes = f.read()
 
-                # Populate
-                output_bytes, results, n_num, n_sel, n_txt = run_population(survey_bytes, template_bytes)
+                output_bytes, results, n_num, n_sel, n_txt = run_population(
+                    survey_bytes, template_bytes
+                )
 
-                # Save populated file back to the same Box folder
                 out_path = box_folder / output_name
                 out_path.write_bytes(output_bytes)
 
                 show_results(output_bytes, results, n_num, n_sel, n_txt, output_name)
-                st.info(f"Saved to Box folder: `{out_path}`")
+                st.info(f"Saved to Box: `{out_path}`")
 
             except Exception as e:
                 st.error(f"Something went wrong: {e}")
 
     if not ready:
-        st.info("Complete both fields above to enable the run button.")
+        if not gdrive_file_id:
+            st.info("Paste a Google Drive link above to get started.")
+        elif not box_folder:
+            st.info("Add the Box folder path to enable the run button.")
 
 
 # ─────────────────────────────────────────────────────────────
