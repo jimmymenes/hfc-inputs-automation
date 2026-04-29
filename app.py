@@ -189,12 +189,22 @@ def populate_text_audits(ws, groups):
     return added
 
 
+def clear_data_rows(ws):
+    """Delete all rows below the header (row 1) so population always starts at row 2."""
+    if ws.max_row > 1:
+        ws.delete_rows(2, ws.max_row)
+
+
 def run_population(survey_bytes: bytes, template_bytes: bytes) -> bytes:
     from openpyxl import load_workbook
 
     numerics, selects, texts, groups = classify_survey_variables(survey_bytes)
 
     wb = load_workbook(io.BytesIO(template_bytes), keep_vba=True)
+
+    # Clear existing data rows so output always starts at row 2
+    for sheet_name in ["other specify", "outliers", "constraints", "logic", "enumstats", "text audits"]:
+        clear_data_rows(wb[sheet_name])
 
     results = {
         "other specify": populate_other_specify(wb["other specify"], selects, texts),
