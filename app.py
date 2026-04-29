@@ -321,11 +321,11 @@ with tab2:
     # ── Helper: clean and resolve any local path ──────────────
     def resolve_path(raw: str):
         from pathlib import Path
-        clean = raw.encode("utf-8", errors="ignore").decode("utf-8")
-        clean = clean.replace("\x00", "").replace("​", "").replace("﻿", "")
-        clean = "".join(c for c in clean if c.isprintable() or c == "\\")
+        # Only strip genuinely invisible/null characters, nothing else
+        clean = raw
+        for bad in ["\x00", "​", "‌", "‍", "﻿", " "]:
+            clean = clean.replace(bad, "")
         clean = clean.strip().strip('"').strip("'").strip()
-        clean = clean.replace("/", "\\")
         return Path(clean), clean
 
     # ── 1. Google Drive survey link ────────────────────────────
@@ -399,7 +399,6 @@ with tab2:
 
     if output_path_input:
         op, op_clean = resolve_path(output_path_input)
-        st.caption(f"Looking in: `{op_clean}`")
 
         # If user gave a full .xlsm path, split into folder + filename
         if op_clean.lower().endswith(".xlsm"):
@@ -407,6 +406,8 @@ with tab2:
             output_name = op.name
         else:
             out_folder = op
+
+        st.caption(f"Resolved path: `{out_folder}` — exists: `{out_folder.exists() if out_folder else False}`")
 
         if out_folder and out_folder.exists():
             st.success(f"Output folder found: `{out_folder}`")
