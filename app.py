@@ -298,18 +298,23 @@ with tab2:
             "'Anyone with the link can view'."
         )
 
-    # ── Helper: scan Box folder for .xlsm files ────────────────
+    # ── Helper: resolve Box path — accepts a file OR a folder ──
     def scan_box_folder(folder_path: str):
         from pathlib import Path
-        # Strip surrounding quotes and whitespace users sometimes paste
-        clean = folder_path.strip().strip('"').strip("'").strip()
-        # Normalise slashes
+        # Remove null bytes and other invisible unicode characters
+        # (caused by UTF-16 copy-paste from Windows Explorer)
+        clean = folder_path.encode("utf-8", errors="ignore").decode("utf-8")
+        clean = clean.replace("\x00", "").replace("​", "").replace("﻿", "")
+        clean = "".join(c for c in clean if c.isprintable() or c == "\\")
+        clean = clean.strip().strip('"').strip("'").strip()
         clean = clean.replace("/", "\\")
         p = Path(clean)
         if not p.exists():
             return None, [], clean
+        if p.is_file():
+            return p.parent, [p], clean
         files = sorted(p.glob("*.xlsm"))
-        return p, [f for f in files], clean
+        return p, files, clean
 
     # ── Google Drive link input ────────────────────────────────
     st.markdown("**1. Survey form — Google Drive share link**")
