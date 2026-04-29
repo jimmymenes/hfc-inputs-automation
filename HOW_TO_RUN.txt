@@ -37,8 +37,43 @@ Tab 1 - "Upload Files":
    your computer. No credentials needed. Best for everyday use.
 
 Tab 2 - "Google Drive & Box":
-   Paste file IDs and credentials to pull files automatically from
-   Google Drive and Box and save the result back to Box.
+   Sign in with your Google work email to access survey forms that are
+   shared with specific users. Paste the Google Drive link, and the app
+   downloads and populates the file automatically.
+
+
+SETTING UP GOOGLE SIGN-IN (admin only — one-time setup)
+---------------------------------------------------------
+To enable "Sign in with Google" for work-email-restricted files:
+
+1. Go to: https://console.cloud.google.com/
+2. Create a new project (or select your existing IPA project).
+3. Go to "APIs & Services" > "OAuth consent screen":
+   - User type: Internal (if using Google Workspace) or External
+   - Fill in app name and contact email
+4. Go to "APIs & Services" > "Credentials":
+   - Click "Create Credentials" > "OAuth client ID"
+   - Application type: Web application
+   - Name: HFC Inputs App
+   - Authorized redirect URIs — add BOTH:
+       http://localhost:8501           (for local use)
+       https://your-app.streamlit.app  (replace with your Streamlit Cloud URL)
+   - Click Create, then copy the Client ID and Client Secret
+5. Enable the Google Drive API:
+   - Go to "APIs & Services" > "Library"
+   - Search "Google Drive API" and click Enable
+
+6. Add credentials to Streamlit Community Cloud:
+   - Go to your app on share.streamlit.io > Settings > Secrets
+   - Add:
+       GOOGLE_CLIENT_ID = "your-client-id.apps.googleusercontent.com"
+       GOOGLE_CLIENT_SECRET = "your-client-secret"
+       GOOGLE_REDIRECT_URI = "https://your-app.streamlit.app"
+
+7. For local use, create a file:
+   .streamlit/secrets.toml
+   and add the same three lines above, but with:
+       GOOGLE_REDIRECT_URI = "http://localhost:8501"
 
 
 QUESTIONS?

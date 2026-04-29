@@ -12,6 +12,7 @@ import io
 import os
 import re
 import tempfile
+import urllib.parse
 
 import streamlit as st
 
@@ -233,6 +234,105 @@ def show_results(output_bytes, results, n_num, n_sel, n_txt, filename):
 
 
 # ─────────────────────────────────────────────────────────────
+# Google OAuth helpers
+# ─────────────────────────────────────────────────────────────
+
+def _oauth_configured() -> bool:
+    """Return True if Google OAuth client credentials are in Streamlit secrets."""
+    try:
+        return bool(st.secrets.get("GOOGLE_CLIENT_ID") and st.secrets.get("GOOGLE_CLIENT_SECRET"))
+    except Exception:
+        return False
+
+def _oauth_redirect_uri() -> str:
+    try:
+        return st.secrets.get("GOOGLE_REDIRECT_URI", "http://localhost:8501")
+    except Exception:
+        return "http://localhost:8501"
+
+def _build_oauth_url() -> str:
+    params = {
+        "client_id": st.secrets["GOOGLE_CLIENT_ID"],
+        "redirect_uri": _oauth_redirect_uri(),
+        "response_type": "code",
+        "scope": "https://www.googleapis.com/auth/drive.readonly openid email profile",
+        "access_type": "offline",
+        "prompt": "select_account",
+    }
+    return "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode(params)
+
+def _exchange_oauth_code(code: str) -> dict:
+    import requests
+    r = requests.post("https://oauth2.googleapis.com/token", data={
+        "code": code,
+        "client_id": st.secrets["GOOGLE_CLIENT_ID"],
+        "client_secret": st.secrets["GOOGLE_CLIENT_SECRET"],
+        "redirect_uri": _oauth_redirect_uri(),
+        "grant_type": "authorization_code",
+    }, timeout=15)
+    return r.json()
+
+def _fetch_google_user(access_token: str) -> dict:
+    import requests
+    r = requests.get(
+        "https://www.googleapis.com/oauth2/v2/userinfo",
+        headers={"Authorization": f"Bearer {access_token}"},
+        timeout=10,
+    )
+    return r.json() if r.status_code == 200 else {}
+
+def _download_authed(file_id: str, access_token: str) -> bytes:
+    """Download a Drive file using an authenticated access token."""
+    import requests
+    h = {"Authorization": f"Bearer {access_token}"}
+
+    # Try export as xlsx (works for native Google Sheets)
+    r = requests.get(
+        f"https://www.googleapis.com/drive/v3/files/{file_id}/export"
+        "?mimeType=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=h, timeout=30,
+    )
+    if r.status_code == 200 and r.content[:2] == b"PK":
+        return r.content
+
+    # Direct download (uploaded .xlsx / XLSForm files)
+    r = requests.get(
+        f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media",
+        headers=h, timeout=60,
+    )
+    if r.status_code == 200 and r.content[:2] == b"PK":
+        return r.content
+
+    raise ValueError(
+        f"Authenticated download failed (HTTP {r.status_code}). "
+        "Check that this file has been shared with your Google account."
+    )
+
+
+# ─────────────────────────────────────────────────────────────
+# Handle Google OAuth callback (runs before tabs render)
+# ─────────────────────────────────────────────────────────────
+_qp = st.query_params.to_dict()
+if "code" in _qp and "google_token" not in st.session_state:
+    with st.spinner("Connecting to Google Drive..."):
+        try:
+            _tok = _exchange_oauth_code(_qp["code"])
+            if "access_token" in _tok:
+                st.session_state["google_token"] = _tok
+                st.session_state["google_user"] = _fetch_google_user(_tok["access_token"])
+            else:
+                st.error(
+                    f"Google sign-in failed: "
+                    f"{_tok.get('error_description', _tok.get('error', 'Unknown error'))}"
+                )
+        except Exception as _e:
+            st.error(f"Google sign-in error: {_e}")
+        finally:
+            st.query_params.clear()
+            st.rerun()
+
+
+# ─────────────────────────────────────────────────────────────
 # Tab 1: Upload files directly
 # Tab 2: Use Google Drive + Box IDs
 # ─────────────────────────────────────────────────────────────
@@ -286,9 +386,40 @@ with tab1:
 with tab2:
     st.subheader("Google Drive link & Box folder path")
     st.markdown(
-        "Paste the Google Drive share link for your survey. "
-        "The HFC inputs template is pre-loaded — just choose where to save the output in Box."
+        "Sign in with your Google work email to access survey forms shared with you, "
+        "then paste the file link and choose where to save the output."
     )
+
+    # ── 0. Google account sign-in ──────────────────────────────
+    st.markdown("**0. Google account**")
+    _google_configured = _oauth_configured()
+    _google_token = st.session_state.get("google_token")
+    _google_user  = st.session_state.get("google_user", {})
+
+    if not _google_configured:
+        st.info(
+            "Google sign-in is not set up yet. "
+            "Ask your admin to add `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and "
+            "`GOOGLE_REDIRECT_URI` to the app's Streamlit secrets. "
+            "Files shared publicly will still work without sign-in."
+        )
+    elif _google_token:
+        _email = _google_user.get("email", "your account")
+        col_a, col_b = st.columns([7, 2])
+        col_a.success(f"Signed in as **{_email}**")
+        if col_b.button("Sign out", key="google_signout"):
+            st.session_state.pop("google_token", None)
+            st.session_state.pop("google_user", None)
+            st.rerun()
+    else:
+        st.warning("Sign in with your Google work email to access files shared with you.")
+        st.link_button(
+            "Sign in with Google",
+            _build_oauth_url(),
+            use_container_width=True,
+        )
+
+    st.markdown("")
 
     # ── Helper: extract file ID from Google Drive URL ──────────
     def extract_gdrive_id(url: str):
@@ -304,18 +435,59 @@ with tab2:
         return None
 
     def download_gdrive_file(file_id: str) -> bytes:
-        import requests
-        # Try spreadsheet export first, then generic Drive download
-        for url in [
+        import requests, re as _re
+
+        def is_excel(data: bytes) -> bool:
+            return len(data) > 4 and data[:2] == b"PK"
+
+        # ── Authenticated download (if user is signed in) ──────
+        _tok = st.session_state.get("google_token")
+        if _tok:
+            try:
+                return _download_authed(file_id, _tok["access_token"])
+            except Exception:
+                pass  # Token may have expired — fall through to public download
+
+        # ── Public download fallback ───────────────────────────
+        session = requests.Session()
+        headers = {"User-Agent": "Mozilla/5.0"}
+
+        # Attempt 1: Direct download with confirm=t (uploaded .xlsx / XLSForm)
+        r = session.get(
+            f"https://drive.google.com/uc?export=download&confirm=t&id={file_id}",
+            timeout=60, headers=headers,
+        )
+        if r.status_code == 200 and is_excel(r.content):
+            return r.content
+
+        # Attempt 2: Spreadsheet export (native Google Sheets)
+        r = session.get(
             f"https://docs.google.com/spreadsheets/d/{file_id}/export?format=xlsx",
+            timeout=30, headers=headers,
+        )
+        if r.status_code == 200 and is_excel(r.content):
+            return r.content
+
+        # Attempt 3: Follow confirmation token for large files
+        r = session.get(
             f"https://drive.google.com/uc?export=download&id={file_id}",
-        ]:
-            r = requests.get(url, timeout=30)
-            if r.status_code == 200 and len(r.content) > 1000:
-                return r.content
+            timeout=30, headers=headers,
+        )
+        if not is_excel(r.content):
+            token_match = _re.search(rb'confirm=([^&"]+)', r.content)
+            if token_match:
+                r = session.get(
+                    f"https://drive.google.com/uc?export=download"
+                    f"&confirm={token_match.group(1).decode()}&id={file_id}",
+                    timeout=60, headers=headers,
+                )
+        if r.status_code == 200 and is_excel(r.content):
+            return r.content
+
         raise ValueError(
-            "Could not download the file. Make sure the Google Drive link is set to "
-            "'Anyone with the link can view'."
+            "Could not download the file. Please:\n"
+            "• Sign in with Google (button above) to access files shared with your work email, OR\n"
+            "• Set the file's sharing to **'Anyone with the link can view'** for public access."
         )
 
     # ── Helper: clean and resolve any local path ──────────────
@@ -328,7 +500,7 @@ with tab2:
         clean = clean.strip().strip('"').strip("'").strip()
         return Path(clean), clean
 
-    # ── 1. Google Drive survey link ────────────────────────────
+    # ── 1. Google Drive survey link (now after sign-in section) ─
     st.markdown("**1. Survey form — Google Drive share link**")
     gdrive_url = st.text_input(
         "Paste the Google Drive share link",
