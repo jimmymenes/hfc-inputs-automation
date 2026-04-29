@@ -9,9 +9,11 @@ secrets.toml
 
 # Survey data and output files — keep off GitHub
 *.xlsx
-*.xlsm
 *.xls
 *.csv
+# Exclude all xlsm except the bundled template
+*.xlsm
+!hfc_inputs.xlsm
 
 # Python cache
 __pycache__/

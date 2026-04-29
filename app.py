@@ -241,25 +241,45 @@ tab1, tab2 = st.tabs(["📁  Upload Files", "☁️  Google Drive & Box"])
 
 # ── TAB 1: UPLOAD ────────────────────────────────────────────
 with tab1:
-    st.subheader("Upload your files")
-    st.markdown("Upload the XLSForm survey and the HFC inputs template from your computer.")
+    st.subheader("Upload your survey form")
+    st.markdown("Upload your SurveyCTO XLSForm. The HFC inputs template is pre-loaded.")
 
-    survey_file   = st.file_uploader("SurveyCTO XLSForm (.xlsx)", type=["xlsx"], key="upload_survey")
-    template_file = st.file_uploader("HFC Inputs Template (.xlsm)", type=["xlsm"], key="upload_template")
+    survey_file = st.file_uploader("SurveyCTO XLSForm (.xlsx)", type=["xlsx"], key="upload_survey")
 
-    if survey_file and template_file:
-        out_name = template_file.name.replace(".xlsm", "_populated.xlsm")
+    # Load bundled template
+    BUNDLED_TEMPLATE = os.path.join(os.path.dirname(__file__), "hfc_inputs.xlsm")
+    has_bundled = os.path.exists(BUNDLED_TEMPLATE)
+
+    if has_bundled:
+        st.success("HFC inputs template: `hfc_inputs.xlsm` (pre-loaded)")
+    else:
+        st.warning("No bundled template found — please upload one below.")
+
+    template_file = None
+    if not has_bundled:
+        template_file = st.file_uploader("HFC Inputs Template (.xlsm)", type=["xlsm"], key="upload_template")
+
+    ready = survey_file and (has_bundled or template_file)
+
+    if ready:
+        out_name = "hfc_inputs_populated.xlsm"
         if st.button("Run Auto-Populate", key="btn_upload", use_container_width=True, type="primary"):
             with st.spinner("Populating HFC inputs..."):
                 try:
+                    survey_bytes = survey_file.read()
+                    if has_bundled:
+                        with open(BUNDLED_TEMPLATE, "rb") as f:
+                            template_bytes = f.read()
+                    else:
+                        template_bytes = template_file.read()
                     output_bytes, results, n_num, n_sel, n_txt = run_population(
-                        survey_file.read(), template_file.read()
+                        survey_bytes, template_bytes
                     )
                     show_results(output_bytes, results, n_num, n_sel, n_txt, out_name)
                 except Exception as e:
                     st.error(f"Something went wrong: {e}")
     else:
-        st.info("Upload both files above to enable the run button.")
+        st.info("Upload the survey form above to enable the run button.")
 
 
 # ── TAB 2: GOOGLE DRIVE LINK + BOX PATH ──────────────────────
