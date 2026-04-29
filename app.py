@@ -303,9 +303,15 @@ def _download_authed(file_id: str, access_token: str) -> bytes:
     if r.status_code == 200 and r.content[:2] == b"PK":
         return r.content
 
+    try:
+        err_detail = r.json().get("error", {}).get("message", r.text[:200])
+    except Exception:
+        err_detail = r.text[:200]
     raise ValueError(
-        f"Authenticated download failed (HTTP {r.status_code}). "
-        "Check that this file has been shared with your Google account."
+        f"Authenticated download failed (HTTP {r.status_code}): {err_detail}\n\n"
+        "Common causes:\n"
+        "• Google Drive API is not enabled in your Google Cloud project\n"
+        "• The file has not been shared with your Google account"
     )
 
 
@@ -443,10 +449,8 @@ with tab2:
         # ── Authenticated download (if user is signed in) ──────
         _tok = st.session_state.get("google_token")
         if _tok:
-            try:
-                return _download_authed(file_id, _tok["access_token"])
-            except Exception:
-                pass  # Token may have expired — fall through to public download
+            # Signed in — use auth only, surface the real error if it fails
+            return _download_authed(file_id, _tok["access_token"])
 
         # ── Public download fallback ───────────────────────────
         session = requests.Session()
