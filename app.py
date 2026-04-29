@@ -301,11 +301,15 @@ with tab2:
     # ── Helper: scan Box folder for .xlsm files ────────────────
     def scan_box_folder(folder_path: str):
         from pathlib import Path
-        p = Path(folder_path)
+        # Strip surrounding quotes and whitespace users sometimes paste
+        clean = folder_path.strip().strip('"').strip("'").strip()
+        # Normalise slashes
+        clean = clean.replace("/", "\\")
+        p = Path(clean)
         if not p.exists():
-            return None, []
+            return None, [], clean
         files = sorted(p.glob("*.xlsm"))
-        return p, [f for f in files]
+        return p, [f for f in files], clean
 
     # ── Google Drive link input ────────────────────────────────
     st.markdown("**1. Survey form — Google Drive share link**")
@@ -336,11 +340,18 @@ with tab2:
     selected_template = None
 
     if box_folder_path:
-        box_folder, template_files = scan_box_folder(box_folder_path)
+        box_folder, template_files, clean_path = scan_box_folder(box_folder_path)
+        st.caption(f"Looking in: `{clean_path}`")
         if box_folder is None:
-            st.error("Folder not found. Make sure Box Drive is synced and the path is correct.")
+            st.error(
+                "Folder not found. Double-check that:\n"
+                "- Box Drive is open and synced on your computer\n"
+                "- The path above matches exactly (watch for double spaces)\n\n"
+                "**Tip:** Open the folder in Windows Explorer, click the address bar, "
+                "copy the path from there and paste it here."
+            )
         elif not template_files:
-            st.warning("No .xlsm files found in that folder.")
+            st.warning("No .xlsm files found in that folder. Check the folder contains the HFC inputs template.")
         else:
             selected_template = st.selectbox(
                 "Select HFC inputs template",
