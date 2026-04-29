@@ -386,55 +386,61 @@ with tab2:
                 st.error("Path not found. Check the path is correct and the file exists.")
 
     # ── 3. Output location ─────────────────────────────────────
-    st.markdown("**3. Where to save the output**")
-    output_path_input = st.text_input(
-        "Paste a folder path or full file path for the output",
-        placeholder=r"C:\Users\yourname\Desktop\DMS App\3_checks\1_inputs",
-        label_visibility="collapsed",
-        key="output_path_input",
-    )
+    import platform
+    is_windows_local = platform.system() == "Windows"
 
-    out_folder = None
     output_name = "hfc_inputs_populated.xlsm"
+    out_folder = None
 
-    if output_path_input:
-        op, op_clean = resolve_path(output_path_input)
-
-        # If user gave a full .xlsm path, split into folder + filename
-        if op_clean.lower().endswith(".xlsm"):
-            out_folder = op.parent
-            output_name = op.name
-        else:
-            out_folder = op
-
-        st.caption(f"Resolved path: `{out_folder}` — exists: `{out_folder.exists() if out_folder else False}`")
-
-        if out_folder and out_folder.exists():
-            st.success(f"Output folder found: `{out_folder}`")
-        else:
-            st.error(
-                "Folder not found. Check the path is correct.\n\n"
-                "**Tip:** Open the folder in Windows Explorer → click the address bar → copy the path."
-            )
-            out_folder = None
-
-    output_name = st.text_input("Output filename", value=output_name, key="output_name_cloud")
+    if is_windows_local:
+        st.markdown("**3. Where to save the output — folder path**")
+        output_path_input = st.text_input(
+            "Paste a folder path or full file path for the output",
+            placeholder=r"C:\Users\yourname\Desktop\DMS App\3_checks\1_inputs",
+            label_visibility="collapsed",
+            key="output_path_input",
+        )
+        if output_path_input:
+            op, op_clean = resolve_path(output_path_input)
+            if op_clean.lower().endswith(".xlsm"):
+                out_folder = op.parent
+                output_name = op.name
+            else:
+                out_folder = op
+            if out_folder and out_folder.exists():
+                st.success(f"Output folder found: `{out_folder}`")
+            else:
+                st.error(
+                    "Folder not found. Check the path is correct.\n\n"
+                    "**Tip:** Open the folder in Windows Explorer → click the address bar → copy the path."
+                )
+                out_folder = None
+        output_name = st.text_input("Output filename", value=output_name, key="output_name_cloud")
+    else:
+        # Running on Streamlit Cloud — just download via browser
+        st.markdown("**3. Output**")
+        st.info("The populated file will be ready to download directly in your browser.")
+        out_folder = "download_only"  # sentinel value
 
     # ── Run button ─────────────────────────────────────────────
     st.markdown("")
     ready = gdrive_file_id and template_bytes_cloud and out_folder
 
     if st.button("Run Auto-Populate", key="btn_cloud", use_container_width=True, type="primary", disabled=not ready):
-        with st.spinner("Downloading survey, populating and saving..."):
+        with st.spinner("Downloading survey and populating..."):
             try:
                 survey_bytes = download_gdrive_file(gdrive_file_id)
                 output_bytes, results, n_num, n_sel, n_txt = run_population(
                     survey_bytes, template_bytes_cloud
                 )
-                out_path = out_folder / output_name
-                out_path.write_bytes(output_bytes)
-                show_results(output_bytes, results, n_num, n_sel, n_txt, output_name)
-                st.info(f"Saved to: `{out_path}`")
+                if is_windows_local and out_folder != "download_only":
+                    from pathlib import Path
+                    out_path = Path(str(out_folder)) / output_name
+                    out_path.write_bytes(output_bytes)
+                    show_results(output_bytes, results, n_num, n_sel, n_txt, output_name)
+                    st.info(f"Saved to: `{out_path}`")
+                else:
+                    show_results(output_bytes, results, n_num, n_sel, n_txt, output_name)
             except Exception as e:
                 st.error(f"Something went wrong: {e}")
 
@@ -442,7 +448,7 @@ with tab2:
         missing = []
         if not gdrive_file_id: missing.append("Google Drive survey link")
         if not template_bytes_cloud: missing.append("HFC inputs template")
-        if not out_folder: missing.append("output folder path")
+        if is_windows_local and not out_folder: missing.append("output folder path")
         if missing:
             st.info(f"Still needed: {', '.join(missing)}")
 
