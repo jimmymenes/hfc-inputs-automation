@@ -29,10 +29,13 @@ st.title("📋 HFC Inputs Auto-Populator")
 st.caption("Innovations for Poverty Action · Data Management Tool")
 st.markdown("---")
 st.markdown(
-    "Paste your SurveyCTO XLSForm and an HFC inputs template — "
-    "the tool will automatically populate all six DMS sheets "
-    "*(other specify, outliers, constraints, logic, enumstats, text audits)*."
+    "Upload your SurveyCTO XLSForm or pull it directly from Google Drive — "
+    "the tool will automatically populate all six DMS input sheets "
+    "*(other specify, outliers, constraints, logic, enumstats, text audits)*. "
+    "The HFC inputs template is pre-loaded, and the populated file can be saved "
+    "to your Box folder or downloaded directly from your browser."
 )
+st.caption("Built by Jimmy Jairo · Innovations for Poverty Action Tanzania")
 
 # ─────────────────────────────────────────────────────────────
 # Core population logic (shared by both tabs)
@@ -643,4 +646,4 @@ with tab2:
 # Footer
 # ─────────────────────────────────────────────────────────────
 st.markdown("---")
-st.caption("Built for IPA Tanzania · Questions? Contact jjairo@poverty-action.org")
+st.caption("Built by Jimmy Jairo · IPA Tanzania · jjairo@poverty-action.org")
