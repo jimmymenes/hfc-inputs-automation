@@ -139,17 +139,29 @@ def classify_survey_variables(survey_bytes):
         "phonenumber", "username", "caseid", "enumerator",
     }
 
+    # Build a header-name -> column-index map so we work with any XLSForm
+    # column order (SurveyCTO/ODK templates vary; e.g. some forms include
+    # `accuracy_threshold` and others don't, shifting later columns).
+    rows_iter = ws.iter_rows(values_only=True)
+    header_row = next(rows_iter, ()) or ()
+    col_idx = {str(h).strip().lower(): i for i, h in enumerate(header_row) if h}
+
+    def cell(row, name, default=""):
+        idx = col_idx.get(name)
+        if idx is None or idx >= len(row):
+            return default
+        val = row[idx]
+        return val if val is not None else default
+
     groups, numerics, selects, texts = [], [], [], []
     repeat_depth = 0
 
-    for i, row in enumerate(ws.iter_rows(values_only=True)):
-        if i == 0:
-            continue
-        def g(idx):
-            return row[idx] if len(row) > idx and row[idx] else ""
-        t, n, l = g(0), g(1), clean_label(g(2))
-        constraint = g(9)
-        disabled = str(g(12)).strip().lower() == "yes"
+    for row in rows_iter:
+        t = cell(row, "type")
+        n = cell(row, "name")
+        l = clean_label(cell(row, "label"))
+        constraint = cell(row, "constraint", default=None)
+        disabled = str(cell(row, "disabled")).strip().lower() == "yes"
         t_str = str(t).lower() if t else ""
 
         # Track repeat-group nesting depth (skip disabled begin/end repeat
