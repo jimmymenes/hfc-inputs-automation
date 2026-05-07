@@ -59,6 +59,7 @@ def classify_survey_variables(survey_bytes):
     }
 
     groups, numerics, selects, texts = [], [], [], []
+    repeat_depth = 0
 
     for i, row in enumerate(ws.iter_rows(values_only=True)):
         if i == 0:
@@ -66,22 +67,47 @@ def classify_survey_variables(survey_bytes):
         def g(idx):
             return row[idx] if len(row) > idx and row[idx] else ""
         t, n, l = g(0), g(1), clean_label(g(2))
+        disabled = str(g(12)).strip().lower() == "yes"
+        t_str = str(t).lower() if t else ""
+
+        # Track repeat-group nesting depth (skip disabled begin/end repeat
+        # so depth stays balanced for them too)
+        if "begin" in t_str and "repeat" in t_str:
+            if not disabled:
+                repeat_depth += 1
+            continue
+        if "end" in t_str and "repeat" in t_str:
+            if not disabled:
+                repeat_depth = max(0, repeat_depth - 1)
+            continue
+
+        if disabled:
+            continue
         if not n:
             continue
+
+        in_repeat = repeat_depth > 0
         base = t.split()[0] if t else ""
         if "begin" in str(t) and "group" in str(t):
-            groups.append({"name": n, "label": l})
+            groups.append({"name": n, "label": l, "in_repeat": in_repeat})
         elif base in SKIP_TYPES or not base:
             continue
         elif base in ("integer", "decimal"):
-            numerics.append({"name": n, "type": t, "label": l})
+            numerics.append({"name": n, "type": t, "label": l, "in_repeat": in_repeat})
         elif base in ("select_one", "select_multiple"):
-            selects.append({"name": n, "type": t, "label": l})
+            selects.append({"name": n, "type": t, "label": l, "in_repeat": in_repeat})
         elif base == "text":
-            texts.append({"name": n, "label": l})
+            texts.append({"name": n, "label": l, "in_repeat": in_repeat})
 
     wb.close()
     return numerics, selects, texts, groups
+
+
+def fmt_name(v):
+    """Append * to variable name when it lives inside a repeat group, so
+    Stata can match the wide-format instances (e.g. var_r1, var_r2 -> var_r*)."""
+    name = str(v["name"]).strip()
+    return f"{name}*" if v.get("in_repeat") else name
 
 
 def existing_vars(ws, col=0):
@@ -89,16 +115,18 @@ def existing_vars(ws, col=0):
 
 
 def populate_other_specify(ws, selects, texts):
-    text_names = {v["name"] for v in texts}
+    text_by_name = {v["name"]: v for v in texts}
     existing = existing_vars(ws)
     added = 0
     for v in selects:
         name = v["name"]
         for suffix in ("_oth", "_oth_r"):
             child = name + suffix
-            if child in text_names and name not in existing:
-                child_label = next((t["label"] for t in texts if t["name"] == child), "Other, specify")
-                ws.append((name, v["label"], child, child_label, None, None, "id member_name village enumerator_id"))
+            child_var = text_by_name.get(child)
+            if child_var and name not in existing:
+                child_label = child_var.get("label") or "Other, specify"
+                ws.append((fmt_name(v), v["label"], fmt_name(child_var), child_label,
+                           None, None, "id member_name village enumerator_id"))
                 existing.add(name)
                 added += 1
                 break
@@ -110,7 +138,7 @@ def populate_outliers(ws, numerics):
     added = 0
     for v in numerics:
         if v["name"] not in existing:
-            ws.append((v["name"], v["label"], "enum", "sd", 3, None, None, None, "id member_name enumerator_id"))
+            ws.append((fmt_name(v), v["label"], "enum", "sd", 3, None, None, None, "id member_name enumerator_id"))
             added += 1
     return added
 
@@ -139,7 +167,7 @@ def populate_constraints(ws, numerics):
     for v in numerics:
         if v["name"] not in existing:
             hard_min, soft_min, soft_max, hard_max = bounds(v["name"])
-            ws.append((v["name"], v["label"], hard_min, soft_min, soft_max, hard_max, None, None, None))
+            ws.append((fmt_name(v), v["label"], hard_min, soft_min, soft_max, hard_max, None, None, None))
             added += 1
     return added
 
@@ -154,7 +182,7 @@ def populate_logic(ws, numerics):
         if "last12m" in n:
             monthly = n.replace("last12m", "last1m")
             if monthly in num_names and n not in existing:
-                ws.append((n, v["label"], f"{n} >= {monthly}", f"!missing({monthly})", None, None, "id member_name enumerator_id"))
+                ws.append((fmt_name(v), v["label"], f"{n} >= {monthly}", f"!missing({monthly})", None, None, "id member_name enumerator_id"))
                 existing.add(n)
                 added += 1
 
@@ -164,7 +192,7 @@ def populate_logic(ws, numerics):
         ("year_begin",         "year_begin >= 1970 & year_begin <= 2026",        None),
     ]:
         if var in num_names and var not in existing:
-            ws.append((var, num_names[var]["label"], assert_expr, cond, None, None, None))
+            ws.append((fmt_name(num_names[var]), num_names[var]["label"], assert_expr, cond, None, None, None))
             existing.add(var)
             added += 1
 
@@ -176,8 +204,8 @@ def populate_enumstats(ws, numerics):
     added = 0
     for v in numerics:
         if v["name"] not in existing:
-            combine = "yes" if re.search(r"_r\??$|_r\d", v["name"].lower()) else None
-            ws.append((v["name"], v["label"], "yes", None, "number", "yes", "yes", "yes", combine, None))
+            combine = "yes" if v.get("in_repeat") or re.search(r"_r\??$|_r\d", v["name"].lower()) else None
+            ws.append((fmt_name(v), v["label"], "yes", None, "number", "yes", "yes", "yes", combine, None))
             added += 1
     return added
 
@@ -187,7 +215,7 @@ def populate_text_audits(ws, groups):
     added = 0
     for g in groups:
         if g["name"] not in existing and g["name"].startswith("section"):
-            ws.append((g["name"], None, None, g["label"]))
+            ws.append((fmt_name(g), None, None, g["label"]))
             added += 1
     return added
 
