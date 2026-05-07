@@ -188,6 +188,79 @@ def clean_label(s):
     return re.sub(r"<[^>]+>", "", str(s)).strip()
 
 
+# SurveyCTO surveys frequently use these as missing/refused/don't-know codes.
+# Clauses comparing the field to one of these are excluded from bound parsing.
+MISSING_CODES = {-888, -999, -666, -777, -88, -99}
+
+
+def parse_constraint_bounds(expr):
+    """Extract (hard_min, hard_max) from a SurveyCTO constraint expression.
+
+    Handles common patterns like:
+        .>0 and .<100              -> (0, 100)
+        .>=0 and .<10              -> (0, 10)
+        .>= 0 or .= -888 or .= -999 -> (0, None)
+        . between 0 and 24          -> (0, 24)
+
+    Branches comparing the field to a missing-value code are dropped.
+    Clauses referencing other variables (${var}) are dropped — those are
+    cross-checks, not magnitude bounds. Returns (None, None) if nothing
+    parseable was found.
+    """
+    if not expr:
+        return (None, None)
+    s = str(expr).strip().strip("()").strip()
+    if not s:
+        return (None, None)
+
+    m = re.match(r"^\s*\.\s*between\s+(-?\d+(?:\.\d+)?)\s+and\s+(-?\d+(?:\.\d+)?)\s*$",
+                 s, flags=re.IGNORECASE)
+    if m:
+        return (_to_int_if_whole(float(m.group(1))),
+                _to_int_if_whole(float(m.group(2))))
+
+    branches = re.split(r"\s+or\s+", s, flags=re.IGNORECASE)
+    real_branches = []
+    for br in branches:
+        br_clean = br.strip().strip("()").strip()
+        mc = re.match(r"^\s*\.\s*=\s*(-?\d+(?:\.\d+)?)\s*$", br_clean)
+        if mc and float(mc.group(1)) in MISSING_CODES:
+            continue
+        if "${" in br_clean:
+            continue
+        real_branches.append(br_clean)
+
+    if not real_branches:
+        return (None, None)
+
+    branch = real_branches[0]
+    mins, maxs = [], []
+    for cl in re.split(r"\s+and\s+", branch, flags=re.IGNORECASE):
+        cl = cl.strip().strip("()").strip()
+        if not cl or "${" in cl:
+            continue
+        m = re.match(r"^\s*\.\s*(>=|<=|>|<|=)\s*(-?\d+(?:\.\d+)?)\s*$", cl)
+        if not m:
+            continue
+        op, val = m.group(1), float(m.group(2))
+        if op == "=":
+            continue
+        if op in (">=", ">"):
+            mins.append(val)
+        else:
+            maxs.append(val)
+
+    hard_min = max(mins) if mins else None
+    hard_max = min(maxs) if maxs else None
+    return (_to_int_if_whole(hard_min), _to_int_if_whole(hard_max))
+
+
+def _to_int_if_whole(v):
+    if v is None:
+        return None
+    return int(v) if v == int(v) else v
+
+
 def build_label_lookup(survey_path: str) -> dict:
     from openpyxl import load_workbook
     wb = load_workbook(survey_path, read_only=True, data_only=True)
@@ -225,6 +298,7 @@ def classify_survey_variables(survey_path: str):
         def g(idx):
             return row[idx] if len(row) > idx and row[idx] else ""
         t, n, l = g(0), g(1), clean_label(g(2))
+        constraint = g(9)
         disabled = str(g(12)).strip().lower() == "yes"
         t_str = str(t).lower() if t else ""
 
@@ -252,7 +326,8 @@ def classify_survey_variables(survey_path: str):
         elif base in SKIP_TYPES:
             continue
         elif base in ("integer", "decimal"):
-            numerics.append({"name": n, "type": t, "label": l, "in_repeat": in_repeat})
+            numerics.append({"name": n, "type": t, "label": l,
+                             "in_repeat": in_repeat, "constraint": constraint})
         elif base in ("select_one", "select_multiple"):
             selects.append({"name": n, "type": t, "label": l, "in_repeat": in_repeat})
         elif base == "text":
@@ -277,6 +352,9 @@ def existing_vars(ws, col=0):
     return vals
 
 
+_OTHER_SUFFIXES = ("_oth", "_other", "_specify", "_oth_r", "_other_r", "_specify_r")
+
+
 def populate_other_specify(ws, selects, texts):
     text_by_name = {v["name"]: v for v in texts}
     existing = existing_vars(ws, col=0)
@@ -284,8 +362,7 @@ def populate_other_specify(ws, selects, texts):
     added = 0
     for v in selects:
         name = v["name"]
-        # Look for a matching child variable: name + "_oth" or name + "_oth_r"
-        for suffix in ("_oth", "_oth_r"):
+        for suffix in _OTHER_SUFFIXES:
             child = name + suffix
             child_var = text_by_name.get(child)
             if child_var and name not in existing:
@@ -310,98 +387,27 @@ def populate_outliers(ws, numerics):
 
 
 def populate_constraints(ws, numerics):
-    """
-    Adds sensible hard/soft min/max defaults by variable name pattern.
-    You should review and adjust these for your study context.
-    """
+    """Hard min/max are pulled directly from each numeric's SurveyCTO
+    `constraint` expression. Soft bounds are intentionally left blank for
+    the user to calibrate per study — there's no defensible way to invent
+    them from the form alone."""
     existing = existing_vars(ws, col=0)
-
-    def bounds(name):
-        n = name.lower()
-        if "age" in n:
-            return (15, 18, 70, 100)
-        if "nbr" in n or "_num" in n or "count" in n or "hh_own" in n:
-            return (0, 0, 20, 100)
-        if "year" in n and "begin" in n:
-            return (1970, 1990, 2025, 2026)
-        if "area" in n or "plot" in n:
-            return (0, 0, 20, 50)
-        if "hrs" in n or "hour" in n or "time" in n:
-            return (0, 0, 14, 24)
-        if "week" in n and "hrs" not in n:
-            return (0, 0, 80, 168)
-        if "last1m" in n or "lastmonth" in n or "last_mont" in n:
-            return (0, 10000, 2000000, 15000000)
-        if "last12m" in n or "last12" in n:
-            return (0, 100000, 10000000, 50000000)
-        if "borrowed" in n or "loan" in n or "borrow" in n:
-            return (0, 50000, 5000000, 20000000)
-        if "saved" in n or "saving" in n:
-            return (0, 0, 5000000, 50000000)
-        if "val" in n or "value" in n or "sales" in n or "rev" in n or "cost" in n or "earn" in n or "spend" in n or "spent" in n or "expense" in n:
-            return (0, 0, 1000000, 10000000)
-        if "accessed" in n:
-            return (0, 0, 26, 26)
-        # generic numeric
-        return (0, 0, None, None)
-
     added = 0
     for v in numerics:
-        if v["name"] not in existing:
-            hard_min, soft_min, soft_max, hard_max = bounds(v["name"])
-            ws.append((fmt_name(v), v["label"], hard_min, soft_min, soft_max, hard_max, None, None, None))
-            added += 1
+        if v["name"] in existing:
+            continue
+        hard_min, hard_max = parse_constraint_bounds(v.get("constraint"))
+        ws.append((fmt_name(v), v["label"], hard_min, None, None, hard_max, None, None, None))
+        added += 1
     return added
 
 
 def populate_logic(ws, numerics):
-    """
-    Adds cross-variable consistency checks for common patterns.
-    """
-    existing = existing_vars(ws, col=0)
-    added = 0
-    num_names = {v["name"]: v for v in numerics}
-
-    # Annual >= monthly pairs
-    for v in numerics:
-        n = v["name"]
-        if "last12m" in n:
-            monthly = n.replace("last12m", "last1m")
-            if monthly in num_names and n not in existing:
-                ws.append((
-                    fmt_name(v), v["label"],
-                    f"{n} >= {monthly}",
-                    f"!missing({monthly})",
-                    None, None, "id member_name enumerator_id"
-                ))
-                existing.add(n)
-                added += 1
-
-    # Time use: paid + unpaid <= 24 hours
-    if "s6_time_paid_work" in num_names and "s6_time_paid_work" not in existing:
-        ws.append((
-            fmt_name(num_names["s6_time_paid_work"]),
-            num_names["s6_time_paid_work"]["label"],
-            "s6_time_paid_work + s6_time_unpaid_act <= 24",
-            "!missing(s6_time_unpaid_act)",
-            None, None, None
-        ))
-        existing.add("s6_time_paid_work")
-        added += 1
-
-    # Weekly hours cap
-    if "week_hrs_spend" in num_names and "week_hrs_spend" not in existing:
-        ws.append((fmt_name(num_names["week_hrs_spend"]), num_names["week_hrs_spend"]["label"], "week_hrs_spend <= 168", None, None, None, None))
-        existing.add("week_hrs_spend")
-        added += 1
-
-    # Business start year
-    if "year_begin" in num_names and "year_begin" not in existing:
-        ws.append((fmt_name(num_names["year_begin"]), num_names["year_begin"]["label"], "year_begin >= 1970 & year_begin <= 2026", None, None, None, None))
-        existing.add("year_begin")
-        added += 1
-
-    return added
+    """Logic checks are study-specific cross-variable consistency rules and
+    cannot reliably be derived from XLSForm metadata alone — the constraint
+    column rarely encodes them, and patterns like annual/monthly pairs are
+    naming-convention-dependent. Sheet is left for the user to fill in."""
+    return 0
 
 
 def populate_enumstats(ws, numerics):
@@ -416,10 +422,12 @@ def populate_enumstats(ws, numerics):
 
 
 def populate_text_audits(ws, groups):
+    """Emit every top-level begin-group from the form. The user can prune
+    the ones they don't want timed in text audits."""
     existing = existing_vars(ws, col=0)
     added = 0
     for g in groups:
-        if g["name"] not in existing and g["name"].startswith("section"):
+        if g["name"] not in existing:
             ws.append((fmt_name(g), None, None, g["label"]))
             added += 1
     return added
