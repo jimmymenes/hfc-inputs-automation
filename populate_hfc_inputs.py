@@ -196,63 +196,132 @@ MISSING_CODES = {-888, -999, -666, -777, -88, -99}
 def parse_constraint_bounds(expr):
     """Extract (hard_min, hard_max) from a SurveyCTO constraint expression.
 
-    Handles common patterns like:
-        .>0 and .<100              -> (0, 100)
-        .>=0 and .<10              -> (0, 10)
-        .>= 0 or .= -888 or .= -999 -> (0, None)
-        . between 0 and 24          -> (0, 24)
+    Handles patterns including:
+        .>0 and .<100                                  -> (0, 100)
+        .>= 0 or .= -888 or .= -999                    -> (0, None)
+        (.>= 0 or .= -888 or .= -999) and .< 50        -> (0, 50)
+        . between 0 and 24                              -> (0, 24)
+        (.>= 0 and .<= 100)                             -> (0, 100)
 
     Branches comparing the field to a missing-value code are dropped.
     Clauses referencing other variables (${var}) are dropped — those are
-    cross-checks, not magnitude bounds. Returns (None, None) if nothing
+    cross-checks, not magnitude bounds. Returns (None, None) when nothing
     parseable was found.
     """
     if not expr:
         return (None, None)
-    s = str(expr).strip().strip("()").strip()
-    if not s:
+    return _eval_bounds(str(expr).strip())
+
+
+def _eval_bounds(expr):
+    """Recursive evaluator: splits on top-level OR (lower precedence), then
+    AND, while respecting parens. Atoms are single comparisons or `between`."""
+    expr = expr.strip()
+    if not expr:
         return (None, None)
 
+    while expr.startswith("(") and expr.endswith(")") and _outer_parens_balanced(expr):
+        expr = expr[1:-1].strip()
+
     m = re.match(r"^\s*\.\s*between\s+(-?\d+(?:\.\d+)?)\s+and\s+(-?\d+(?:\.\d+)?)\s*$",
-                 s, flags=re.IGNORECASE)
+                 expr, flags=re.IGNORECASE)
     if m:
         return (_to_int_if_whole(float(m.group(1))),
                 _to_int_if_whole(float(m.group(2))))
 
-    branches = re.split(r"\s+or\s+", s, flags=re.IGNORECASE)
-    real_branches = []
-    for br in branches:
-        br_clean = br.strip().strip("()").strip()
-        mc = re.match(r"^\s*\.\s*=\s*(-?\d+(?:\.\d+)?)\s*$", br_clean)
-        if mc and float(mc.group(1)) in MISSING_CODES:
-            continue
-        if "${" in br_clean:
-            continue
-        real_branches.append(br_clean)
+    or_parts = _split_top(expr, "or")
+    if len(or_parts) > 1:
+        kept = [p for p in or_parts if not _is_missing_code_clause(p)]
+        if not kept:
+            return (None, None)
+        return _eval_bounds(kept[0])
 
-    if not real_branches:
+    and_parts = _split_top(expr, "and")
+    if len(and_parts) > 1:
+        ranges = [_eval_bounds(p) for p in and_parts]
+        mins = [r[0] for r in ranges if r[0] is not None]
+        maxs = [r[1] for r in ranges if r[1] is not None]
+        return (max(mins) if mins else None,
+                min(maxs) if maxs else None)
+
+    return _parse_atom(expr)
+
+
+def _outer_parens_balanced(expr):
+    if not (expr.startswith("(") and expr.endswith(")")):
+        return False
+    depth = 0
+    for i, c in enumerate(expr):
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0 and i < len(expr) - 1:
+                return False
+    return depth == 0
+
+
+def _split_top(expr, op):
+    parts = []
+    last = 0
+    depth = 0
+    op_len = len(op)
+    op_lower = op.lower()
+    i = 0
+    while i < len(expr):
+        c = expr[i]
+        if c == "(":
+            depth += 1
+            i += 1
+            continue
+        if c == ")":
+            depth -= 1
+            i += 1
+            continue
+        if depth == 0 and c.isspace():
+            j = i
+            while j < len(expr) and expr[j].isspace():
+                j += 1
+            end = j + op_len
+            if (end <= len(expr)
+                and expr[j:end].lower() == op_lower
+                and (end == len(expr) or not (expr[end].isalnum() or expr[end] == "_"))
+            ):
+                parts.append(expr[last:i].strip())
+                last = end
+                i = end
+                continue
+            i = j
+            continue
+        i += 1
+    parts.append(expr[last:].strip())
+    return [p for p in parts if p]
+
+
+def _is_missing_code_clause(clause):
+    c = clause.strip().strip("()").strip()
+    m = re.match(r"^\s*\.\s*=\s*(-?\d+(?:\.\d+)?)\s*$", c)
+    return bool(m and float(m.group(1)) in MISSING_CODES)
+
+
+def _parse_atom(expr):
+    e = expr.strip().strip("()").strip()
+    if not e or "${" in e:
         return (None, None)
-
-    branch = real_branches[0]
-    mins, maxs = [], []
-    for cl in re.split(r"\s+and\s+", branch, flags=re.IGNORECASE):
-        cl = cl.strip().strip("()").strip()
-        if not cl or "${" in cl:
-            continue
-        m = re.match(r"^\s*\.\s*(>=|<=|>|<|=)\s*(-?\d+(?:\.\d+)?)\s*$", cl)
-        if not m:
-            continue
-        op, val = m.group(1), float(m.group(2))
-        if op == "=":
-            continue
-        if op in (">=", ">"):
-            mins.append(val)
-        else:
-            maxs.append(val)
-
-    hard_min = max(mins) if mins else None
-    hard_max = min(maxs) if maxs else None
-    return (_to_int_if_whole(hard_min), _to_int_if_whole(hard_max))
+    m = re.match(r"^\s*\.\s*between\s+(-?\d+(?:\.\d+)?)\s+and\s+(-?\d+(?:\.\d+)?)\s*$",
+                 e, flags=re.IGNORECASE)
+    if m:
+        return (_to_int_if_whole(float(m.group(1))),
+                _to_int_if_whole(float(m.group(2))))
+    m = re.match(r"^\s*\.\s*(>=|<=|>|<|=)\s*(-?\d+(?:\.\d+)?)\s*$", e)
+    if not m:
+        return (None, None)
+    op, val = m.group(1), float(m.group(2))
+    if op == "=":
+        return (None, None)
+    if op in (">=", ">"):
+        return (_to_int_if_whole(val), None)
+    return (None, _to_int_if_whole(val))
 
 
 def _to_int_if_whole(v):
