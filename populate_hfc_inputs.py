@@ -303,7 +303,8 @@ def populate_outliers(ws, numerics):
     added = 0
     for v in numerics:
         if v["name"] not in existing:
-            ws.append((fmt_name(v), v["label"], "enum", "sd", 3, None, None, None, "id member_name enumerator_id"))
+            combine = "yes" if v.get("in_repeat") else None
+            ws.append((fmt_name(v), v["label"], "enum", "sd", 3, combine, None, None, "id member_name enumerator_id"))
             added += 1
     return added
 
@@ -408,10 +409,7 @@ def populate_enumstats(ws, numerics):
     added = 0
     for v in numerics:
         if v["name"] not in existing:
-            n = v["name"].lower()
-            # Use combine=yes for repeat variables (those inside a begin/end
-            # repeat block, or whose name pattern matches _r / _r??)
-            combine = "yes" if v.get("in_repeat") or re.search(r"_r\??$|_r\d", n) else None
+            combine = "yes" if v.get("in_repeat") else None
             ws.append((fmt_name(v), v["label"], "yes", None, "number", "yes", "yes", "yes", combine, None))
             added += 1
     return added
